@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "knowledge-api"
+version = "1.0.0"
+description = "Knowledge API - the central knowledge layer for all company products."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [{ name = "David Salami" }]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+filterwarnings = [
+    "error::DeprecationWarning:app.*",
+    "ignore::jwt.warnings.InsecureKeyLengthWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

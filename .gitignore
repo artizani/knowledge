@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+*.local
+
+# CDK
+infra/cdk.out/
+cdk.out/
+*.swp
+
+# OS
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+*.zip

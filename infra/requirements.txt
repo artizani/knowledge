@@ -1,0 +1,5 @@
+# AWS CDK (Python) dependencies for the Knowledge API infrastructure.
+# Pinned to a version whose Cloud Assembly schema is compatible with the
+# CDK CLI used locally/in CI (see .github/workflows/deploy.yml).
+aws-cdk-lib==2.190.0
+constructs>=10.0.0,<11.0.0
