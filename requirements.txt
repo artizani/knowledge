@@ -2,8 +2,10 @@
 # Pinned for reproducible CDK bundling and CI.
 fastapi==0.138.2
 mangum==0.21.0
-sqlalchemy==2.0.51
 pydantic==2.13.4
 pydantic-settings==2.14.2
 pyjwt==2.13.0
+httpx==0.28.1
+# SQLAlchemy/psycopg2 are only used by scripts/init_db.py (direct Postgres).
+sqlalchemy==2.0.51
 psycopg2-binary==2.9.10
