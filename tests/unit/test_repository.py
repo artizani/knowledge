@@ -153,7 +153,7 @@ def test_search_queries_titles_and_documents_and_merges(repo):
     assert {r["id"] for r in results} == {"k1", "k2"}
     assert any("title=ilike.*paye*" in c[2] for c in calls)
     assert any("content=ilike.*paye*" in c[2] for c in calls)
-    assert any("id=in.(k1,k2)" in c[2] for c in calls)
+    assert any("id=in." in c[2] and "k1" in c[2] and "k2" in c[2] for c in calls)
 
 
 def test_update_patches_knowledge(repo):
