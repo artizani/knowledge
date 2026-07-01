@@ -2,11 +2,16 @@
 
 Provisions:
 
-* a Secrets Manager secret holding Supabase credentials + auth tokens,
+* an API Gateway HTTP API proxying all routes to a Python 3.13 Lambda,
 * a Python 3.13 Lambda running the FastAPI app via Mangum,
-* an API Gateway HTTP API proxying all routes to the Lambda,
-* least-privilege IAM (Lambda reads only its own secret),
+* least-privilege IAM (Lambda reads only the external secret),
 * a CloudWatch log group with a bounded retention.
+
+The secret itself is **not** managed by this stack. Create it manually (or via
+a separate one-off process) at ``knowledge-api/config`` and populate it with
+``SUPABASE_URL``, ``SUPABASE_SERVICE_ROLE_KEY``, ``SUPABASE_ANON_KEY``,
+``API_TOKEN``, and ``JWT_SECRET``. This prevents CDK deploys from overwriting
+secret values.
 
 Bundling installs ``requirements.txt`` into the Lambda asset using the official
 Lambda build image (requires Docker). Pass ``-c skip_bundling=true`` to skip
@@ -32,6 +37,7 @@ from constructs import Construct
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = PROJECT_ROOT / "app"
+SECRET_NAME = "knowledge-api/config"
 
 # Install runtime deps into the asset root, then copy the app package + handler.
 _BUNDLE_CMD = (
@@ -60,23 +66,16 @@ class KnowledgeApiStack(Stack):
 
         log_level = self.node.try_get_context("log_level") or "INFO"
 
-        # -- Secret ------------------------------------------------------- #
-        # Holds SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY,
-        # API_TOKEN, JWT_SECRET, etc. Fill these in after first deploy.
-        secret = secretsmanager.Secret(
+        # -- Secret --------------------------------------------------------- #
+        # Reference an externally-managed secret. This stack will NOT create or
+        # modify the secret value, so manual/CD secret updates are preserved.
+        secret = secretsmanager.Secret.from_secret_name_v2(
             self,
             "KnowledgeApiSecret",
-            secret_name="knowledge-api/config",
-            description="Knowledge API config: Supabase keys, API_TOKEN, JWT_SECRET.",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"SUPABASE_URL":"","SUPABASE_SERVICE_ROLE_KEY":"","SUPABASE_ANON_KEY":"","JWT_SECRET":""}',
-                generate_string_key="API_TOKEN",
-                exclude_punctuation=True,
-                password_length=48,
-            ),
+            secret_name=SECRET_NAME,
         )
 
-        # -- Lambda ------------------------------------------------------- #
+        # -- Lambda --------------------------------------------------------- #
         log_group = logs.LogGroup(
             self,
             "KnowledgeApiLogGroup",
@@ -103,7 +102,7 @@ class KnowledgeApiStack(Stack):
         # Least privilege: the function can read only its own secret.
         secret.grant_read(fn)
 
-        # -- HTTP API ----------------------------------------------------- #
+        # -- HTTP API ------------------------------------------------------- #
         http_api = apigwv2.HttpApi(
             self,
             "KnowledgeHttpApi",

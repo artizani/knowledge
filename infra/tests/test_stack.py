@@ -45,8 +45,21 @@ def test_lambda_has_secret_arn_env(template: Template):
     )
 
 
+def test_references_secret(template: Template):
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "Environment": {
+                "Variables": Match.object_like({"SECRET_ARN": Match.any_value()})
+            }
+        },
+    )
+
+
 def test_creates_secret(template: Template):
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+    # The secret is externally managed; the stack only references it.
+    template.resource_count_is("AWS::SecretsManager::Secret", 0)
+    template.resource_count_is("AWS::IAM::Policy", 1)
 
 
 def test_creates_http_api(template: Template):
@@ -73,7 +86,8 @@ def test_lambda_can_read_secret(template: Template):
                             {
                                 "Action": Match.array_with(
                                     ["secretsmanager:GetSecretValue"]
-                                )
+                                ),
+                                "Resource": Match.any_value(),
                             }
                         )
                     ]
