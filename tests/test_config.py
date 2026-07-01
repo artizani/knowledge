@@ -14,12 +14,21 @@ def _clear_cache():
 
 
 def test_settings_defaults(monkeypatch):
-    for var in ["DATABASE_URL", "API_TOKEN", "JWT_SECRET", "AUTH_REQUIRED"]:
+    for var in [
+        "DATABASE_URL",
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_ANON_KEY",
+        "API_TOKEN",
+        "JWT_SECRET",
+        "AUTH_REQUIRED",
+    ]:
         monkeypatch.delenv(var, raising=False)
 
     settings = config.Settings()
 
-    assert settings.database_url.startswith("sqlite")
+    assert settings.database_url is None
+    assert settings.supabase_url is None
     assert settings.auth_required is True
     assert settings.require_auth_for_reads is False
     assert settings.jwt_algorithms == ["HS256"]
@@ -27,14 +36,18 @@ def test_settings_defaults(monkeypatch):
 
 
 def test_settings_reads_env(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg2://u:p@host:5432/db")
+    monkeypatch.setenv("SUPABASE_URL", "https://abc.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-key")
     monkeypatch.setenv("API_TOKEN", "secret-token")
     monkeypatch.setenv("JWT_SECRET", "jwt-secret")
     monkeypatch.setenv("AUTH_REQUIRED", "false")
 
     settings = config.Settings()
 
-    assert settings.database_url == "postgresql+psycopg2://u:p@host:5432/db"
+    assert settings.supabase_url == "https://abc.supabase.co"
+    assert settings.rest_base_url == "https://abc.supabase.co/rest/v1"
+    assert settings.supabase_service_role_key == "service-key"
     assert settings.api_token == "secret-token"
     assert settings.jwt_secret == "jwt-secret"
     assert settings.auth_required is False

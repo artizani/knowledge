@@ -1,148 +1,203 @@
-"""Unit tests for the data-access repository."""
+"""Tests for the Supabase PostgREST repository layer."""
 from __future__ import annotations
 
+import json
 import uuid
 
+import httpx
 import pytest
+
+from app.repository import KnowledgeRepository
+
+
+class _RecordingTransport(httpx.MockTransport):
+    def __init__(self, handler):
+        super().__init__(handler)
+        self.last_request: httpx.Request | None = None
+
+    def handle_request(self, request: httpx.Request):
+        self.last_request = request
+        return super().handle_request(request)
 
 
 @pytest.fixture
-def repo(db_session):
-    from app.repository import KnowledgeRepository
-
-    return KnowledgeRepository(db_session)
-
-
-def _make(repo, db_session, **overrides):
-    data = {
-        "namespace": "icebox",
-        "title": "Life Weeks",
-        "type": "idea",
-        "status": "research",
-        "meta": {"tags": ["consumer"]},
-        "documents": [("spec.md", "# Spec PAYE"), ("research.md", "# Research")],
-    }
-    data.update(overrides)
-    k = repo.create(**data)
-    db_session.commit()
-    return k
+def repo():
+    return KnowledgeRepository(
+        base_url="https://example.supabase.co/rest/v1",
+        api_key="anon",
+        service_key="service",
+    )
 
 
-def test_create_persists_knowledge_and_documents(repo, db_session):
-    k = _make(repo, db_session)
-    assert isinstance(k.id, uuid.UUID)
-    assert k.meta == {"tags": ["consumer"]}
-    assert {d.name for d in k.documents} == {"spec.md", "research.md"}
+def _install_write(repo, handler):
+    transport = _RecordingTransport(handler)
+    repo._write_client = httpx.Client(
+        base_url=repo.base_url,
+        headers=repo._headers(repo.service_key),
+        transport=transport,
+        timeout=10.0,
+    )
+    return transport
 
 
-def test_get_returns_item(repo, db_session):
-    k = _make(repo, db_session)
-    fetched = repo.get(k.id)
-    assert fetched is not None
-    assert fetched.id == k.id
+def _install_read(repo, handler):
+    transport = _RecordingTransport(handler)
+    repo._read_client = httpx.Client(
+        base_url=repo.base_url,
+        headers=repo._headers(repo.api_key),
+        transport=transport,
+        timeout=10.0,
+    )
+    return transport
+
+
+ABC = uuid.UUID("00000000-0000-0000-0000-000000000abc")
+
+
+def test_create_knowledge_posts_to_table(repo):
+    def handler(request: httpx.Request):
+        assert request.method == "POST"
+        assert request.url.path == "/rest/v1/knowledge"
+        assert request.headers["apikey"] == "service"
+        assert request.headers["authorization"] == "Bearer service"
+        assert request.headers["prefer"] == "return=representation"
+        body = json.loads(request.content)
+        assert body["namespace"] == "icebox"
+        assert body["title"] == "T"
+        assert body["type"] == "idea"
+        assert body["status"] == "inbox"
+        assert body["metadata"] == {"tags": ["a"]}
+        return httpx.Response(201, json=[{"id": str(ABC), "created_at": "2024-01-01T00:00:00Z"}])
+
+    transport = _install_write(repo, handler)
+    result = repo.create_knowledge(
+        namespace="icebox", title="T", type="idea", status="inbox", metadata={"tags": ["a"]}
+    )
+    assert result["id"] == str(ABC)
+    assert transport.last_request is not None
+
+
+def test_create_documents_posts_batch(repo):
+    def handler(request: httpx.Request):
+        assert request.method == "POST"
+        assert request.url.path == "/rest/v1/documents"
+        assert request.headers["apikey"] == "service"
+        body = json.loads(request.content)
+        assert len(body) == 2
+        assert {d["name"] for d in body} == {"a.md", "b.md"}
+        return httpx.Response(201, json=[{"id": "d1"}, {"id": "d2"}])
+
+    transport = _install_write(repo, handler)
+    result = repo.create_documents(
+        str(ABC), [("a.md", "content-a"), ("b.md", "content-b")]
+    )
+    assert len(result) == 2
+
+
+def test_get_joins_documents(repo):
+    def handler(request: httpx.Request):
+        assert request.method == "GET"
+        assert request.url.path == "/rest/v1/knowledge"
+        assert f"id=eq.{ABC}" in str(request.url)
+        assert "deleted_at=is.null" in str(request.url)
+        assert "select=*,documents(*)" in str(request.url)
+        return httpx.Response(200, json=[{"id": str(ABC), "title": "T", "documents": [{"name": "a.md"}]}])
+
+    _install_read(repo, handler)
+    result = repo.get(ABC)
+    assert result["id"] == str(ABC)
+    assert result["documents"][0]["name"] == "a.md"
 
 
 def test_get_missing_returns_none(repo):
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=[])
+
+    _install_read(repo, handler)
     assert repo.get(uuid.uuid4()) is None
 
 
-def test_soft_delete_hides_from_get(repo, db_session):
-    k = _make(repo, db_session)
-    repo.soft_delete(k)
-    db_session.commit()
-    assert repo.get(k.id) is None
-    assert k.deleted_at is not None
+def test_list_builds_filters(repo):
+    def handler(request: httpx.Request):
+        qs = str(request.url.query)
+        assert "namespace=eq.icebox" in qs
+        assert "type=eq.idea" in qs
+        assert "status=eq.research" in qs
+        assert "limit=10" in qs
+        assert "deleted_at=is.null" in qs
+        assert "order=created_at.desc" in qs
+        assert "select=*,documents(*)" in qs
+        return httpx.Response(200, json=[])
+
+    _install_read(repo, handler)
+    repo.list(namespace="icebox", type="idea", status="research", limit=10)
 
 
-def test_list_filters_by_namespace(repo, db_session):
-    _make(repo, db_session, namespace="icebox", title="A")
-    _make(repo, db_session, namespace="taxable", title="B")
+def test_search_uses_or_ilike(repo):
+    def handler(request: httpx.Request):
+        qs = str(request.url.query)
+        assert "or=(title.ilike.*paye*,documents.content.ilike.*paye*)" in qs
+        assert "namespace=eq.taxable" in qs
+        assert "limit=20" in qs
+        return httpx.Response(200, json=[])
 
-    results = repo.list(namespace="taxable")
-    assert len(results) == 1
-    assert results[0].title == "B"
-
-
-def test_list_filters_by_type_and_status(repo, db_session):
-    _make(repo, db_session, type="idea", status="inbox", title="A")
-    _make(repo, db_session, type="spec", status="building", title="B")
-
-    assert [k.title for k in repo.list(type="spec")] == ["B"]
-    assert [k.title for k in repo.list(status="inbox")] == ["A"]
+    _install_read(repo, handler)
+    repo.search(query="paye", namespace="taxable", limit=20)
 
 
-def test_list_excludes_soft_deleted(repo, db_session):
-    a = _make(repo, db_session, title="A")
-    _make(repo, db_session, title="B")
-    repo.soft_delete(a)
-    db_session.commit()
+def test_update_patches_knowledge(repo):
+    def handler(request: httpx.Request):
+        assert request.method == "PATCH"
+        assert request.url.path == "/rest/v1/knowledge"
+        assert f"id=eq.{ABC}" in str(request.url)
+        body = json.loads(request.content)
+        assert body["title"] == "New"
+        assert body["status"] == "building"
+        return httpx.Response(200, json=[{"id": str(ABC), "title": "New", "status": "building"}])
 
-    titles = {k.title for k in repo.list()}
-    assert titles == {"B"}
-
-
-def test_list_respects_limit_and_orders_newest_first(repo, db_session):
-    import time
-
-    first = _make(repo, db_session, title="first")
-    time.sleep(0.01)
-    second = _make(repo, db_session, title="second")
-
-    results = repo.list(limit=1)
-    assert len(results) == 1
-    assert results[0].id == second.id
-    assert first.id != second.id
+    _install_write(repo, handler)
+    result = repo.update_knowledge(ABC, {"title": "New", "status": "building"})
+    assert result["title"] == "New"
 
 
-def test_search_matches_title_case_insensitive(repo, db_session):
-    _make(repo, db_session, title="PAYE rules", documents=[])
-    _make(repo, db_session, title="Something else", documents=[])
+def test_replace_documents_deletes_then_inserts(repo):
+    calls = []
 
-    results = repo.search(query="paye")
-    assert len(results) == 1
-    assert results[0].title == "PAYE rules"
+    def handler(request: httpx.Request):
+        calls.append((request.method, request.url.path, str(request.url.query)))
+        if request.method == "DELETE":
+            assert request.url.path == "/rest/v1/documents"
+            assert f"knowledge_id=eq.{ABC}" in str(request.url)
+            return httpx.Response(204)
+        if request.method == "POST":
+            assert request.url.path == "/rest/v1/documents"
+            return httpx.Response(201, json=[{"id": "d1"}])
+        return httpx.Response(200)
 
-
-def test_search_matches_document_content(repo, db_session):
-    _make(repo, db_session, title="Nothing", documents=[("d.md", "contains PAYE inside")])
-    _make(repo, db_session, title="Other", documents=[("d.md", "unrelated")])
-
-    results = repo.search(query="PAYE")
-    assert len(results) == 1
-    assert results[0].title == "Nothing"
-
-
-def test_search_excludes_soft_deleted(repo, db_session):
-    k = _make(repo, db_session, title="PAYE thing", documents=[])
-    repo.soft_delete(k)
-    db_session.commit()
-    assert repo.search(query="PAYE") == []
+    _install_write(repo, handler)
+    repo.replace_documents(ABC, [("new.md", "body")])
+    assert calls[0][0] == "DELETE"
+    assert calls[1][0] == "POST"
 
 
-def test_search_namespace_filter(repo, db_session):
-    _make(repo, db_session, namespace="taxable", title="PAYE a", documents=[])
-    _make(repo, db_session, namespace="icebox", title="PAYE b", documents=[])
+def test_soft_delete_patches_deleted_at(repo):
+    def handler(request: httpx.Request):
+        assert request.method == "PATCH"
+        assert request.url.path == "/rest/v1/knowledge"
+        assert f"id=eq.{ABC}" in str(request.url)
+        body = json.loads(request.content)
+        assert body["deleted_at"] is not None
+        return httpx.Response(200, json=[{"id": str(ABC), "deleted_at": "2024-01-01T00:00:00Z"}])
 
-    results = repo.search(query="PAYE", namespace="taxable")
-    assert len(results) == 1
-    assert results[0].namespace == "taxable"
-
-
-def test_search_no_duplicate_rows(repo, db_session):
-    # Two documents both matching should not duplicate the knowledge row.
-    _make(
-        repo,
-        db_session,
-        title="PAYE title",
-        documents=[("a.md", "PAYE one"), ("b.md", "PAYE two")],
-    )
-    results = repo.search(query="PAYE")
-    assert len(results) == 1
+    _install_write(repo, handler)
+    result = repo.soft_delete(ABC)
+    assert result["deleted_at"] is not None
 
 
-def test_replace_documents(repo, db_session):
-    k = _make(repo, db_session)
-    repo.replace_documents(k, [("new.md", "new content")])
-    db_session.commit()
-    db_session.refresh(k)
-    assert [d.name for d in k.documents] == ["new.md"]
+def test_postgrest_error_raises(repo):
+    def handler(request: httpx.Request):
+        return httpx.Response(500, json={"message": "boom"})
+
+    _install_write(repo, handler)
+    with pytest.raises(RuntimeError):
+        repo.create_knowledge(namespace="ns", title="T", type="idea", status="inbox")

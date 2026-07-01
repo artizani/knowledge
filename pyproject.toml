@@ -21,6 +21,7 @@ filterwarnings = [
     "error::DeprecationWarning:app.*",
     "ignore::jwt.warnings.InsecureKeyLengthWarning",
 ]
+norecursedirs = ["cdk.out", "infra/cdk.out", ".venv", "node_modules"]
 
 [tool.coverage.run]
 source = ["app"]

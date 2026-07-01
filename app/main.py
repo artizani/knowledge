@@ -1,9 +1,4 @@
-"""FastAPI application: routes, error contract, and request logging.
-
-Built via a ``create_app`` factory so tests can construct isolated instances
-and override the ``get_session`` dependency. The same app object is wrapped by
-Mangum in :mod:`handler` for AWS Lambda + API Gateway.
-"""
+"""FastAPI application: routes, error contract, and request logging."""
 from __future__ import annotations
 
 import time
@@ -13,15 +8,14 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.auth import require_read_auth, require_write_auth
 from app.config import get_settings
 from app.constants import KNOWLEDGE_STATUSES, KNOWLEDGE_TYPES
-from app.database import get_session
 from app.errors import AuthError, NotFoundError
 from app.logging_config import configure_logging, get_logger
+from app.repository import KnowledgeRepository
 from app.schemas import (
     CaptureRequest,
     CaptureResponse,
@@ -36,16 +30,28 @@ from app.service import KnowledgeService
 logger = get_logger()
 
 
-def get_service(session: Session = Depends(get_session)) -> KnowledgeService:
-    return KnowledgeService(session)
+def get_repository() -> KnowledgeRepository:
+    """FastAPI dependency yielding a configured PostgREST repository."""
+
+    settings = get_settings()
+    if not settings.rest_base_url or not settings.supabase_service_role_key:
+        raise RuntimeError("Supabase URL and service role key are not configured")
+    return KnowledgeRepository(
+        base_url=settings.rest_base_url,
+        api_key=settings.supabase_anon_key or settings.supabase_service_role_key,
+        service_key=settings.supabase_service_role_key,
+        schema=settings.supabase_schema,
+    )
+
+
+def get_service(repo: KnowledgeRepository = Depends(get_repository)) -> KnowledgeService:
+    return KnowledgeService(repo)
 
 
 def _error(status_code: int, code: str, detail=None, headers=None) -> JSONResponse:
     body: dict = {"error": code}
     if detail is not None:
         body["detail"] = detail
-    # jsonable_encoder makes nested pydantic error contexts (which may contain
-    # raw exception objects) safe to serialise.
     return JSONResponse(
         status_code=status_code, content=jsonable_encoder(body), headers=headers
     )
@@ -72,6 +78,12 @@ def _register_error_handlers(app: FastAPI) -> None:
         return _error(exc.status_code, code, exc.detail)
 
 
+# Global error fallback; unexpected exceptions become masked 500s.
+async def _server_error(request: Request, exc: Exception):
+    logger.exception("unexpected error", extra={"request_id": getattr(request.state, "request_id", None)})
+    return _error(500, "internal_error", "Unexpected server error")
+
+
 def _add_logging_middleware(app: FastAPI) -> None:
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
@@ -86,9 +98,9 @@ def _add_logging_middleware(app: FastAPI) -> None:
         try:
             response = await call_next(request)
             status_code = response.status_code
-        except Exception as exc:  # unexpected -> masked 500
+        except Exception as exc:
             failure = exc
-            response = _error(500, "internal_error", "Unexpected server error")
+            response = await _server_error(request, exc)
             status_code = 500
 
         latency_ms = round((time.perf_counter() - start) * 1000, 3)
@@ -150,7 +162,7 @@ def create_app() -> FastAPI:
         request.state.endpoint = "POST /capture"
         request.state.namespace = payload.namespace
         knowledge = service.capture(payload)
-        return CaptureResponse(id=knowledge.id, status="captured")
+        return CaptureResponse(id=uuid.UUID(knowledge["id"]), status="captured")
 
     # -- read one --------------------------------------------------------- #
     @app.get("/knowledge/{knowledge_id}", response_model=KnowledgeOut, tags=["knowledge"])
@@ -162,7 +174,7 @@ def create_app() -> FastAPI:
     ):
         request.state.endpoint = "GET /knowledge/{id}"
         knowledge = service.get(knowledge_id)
-        request.state.namespace = knowledge.namespace
+        request.state.namespace = knowledge["namespace"]
         return KnowledgeOut.model_validate(knowledge)
 
     # -- list ------------------------------------------------------------- #
@@ -211,7 +223,7 @@ def create_app() -> FastAPI:
     ):
         request.state.endpoint = "PUT /knowledge/{id}"
         knowledge = service.update(knowledge_id, payload)
-        request.state.namespace = knowledge.namespace
+        request.state.namespace = knowledge["namespace"]
         return KnowledgeOut.model_validate(knowledge)
 
     # -- delete ----------------------------------------------------------- #
@@ -224,7 +236,7 @@ def create_app() -> FastAPI:
     ):
         request.state.endpoint = "DELETE /knowledge/{id}"
         knowledge = service.delete(knowledge_id)
-        request.state.namespace = knowledge.namespace
-        return DeleteResponse(id=knowledge.id, status="deleted")
+        request.state.namespace = knowledge["namespace"]
+        return DeleteResponse(id=uuid.UUID(knowledge["id"]), status="deleted")
 
     return app

@@ -1,10 +1,4 @@
-"""Application configuration.
-
-Settings are read from environment variables. In AWS the sensitive values
-(``DATABASE_URL``, ``API_TOKEN``, ``JWT_SECRET``) are injected from AWS Secrets
-Manager -- see :func:`app.secrets.load_secrets_into_env`, which runs at Lambda
-cold start and populates the environment before settings are built.
-"""
+"""Application configuration/settings."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -23,23 +17,23 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Database ---------------------------------------------------------------
-    # A local SQLite default keeps the app runnable for development and tests.
-    # Production points this at the Supabase PostgreSQL pooler.
-    database_url: str = Field(default="sqlite+pysqlite:///./knowledge_local.db")
+    # Supabase ---------------------------------------------------------------
+    supabase_url: str | None = Field(default=None)
+    supabase_service_role_key: str | None = Field(default=None)
+    supabase_anon_key: str | None = Field(default=None)
+    supabase_schema: str = Field(default="knowledge")
+
+    # Fallback: direct PostgreSQL (deprecated but kept for local scripts/init).
+    database_url: str | None = Field(default=None)
 
     # Authentication ---------------------------------------------------------
-    # Either a static bearer token (internal use) or a JWT secret (Auth.js).
     api_token: str | None = Field(default=None)
     jwt_secret: str | None = Field(default=None)
     jwt_algorithms: list[str] = Field(default_factory=lambda: ["HS256"])
     jwt_audience: str | None = Field(default=None)
     jwt_issuer: str | None = Field(default=None)
 
-    # Whether mutating endpoints require a valid token.
     auth_required: bool = Field(default=True)
-    # Whether read endpoints also require a valid token. Spec only mandates
-    # protecting writes, so reads are open by default.
     require_auth_for_reads: bool = Field(default=False)
 
     # Observability ----------------------------------------------------------
@@ -53,13 +47,15 @@ class Settings(BaseSettings):
     default_list_limit: int = Field(default=50)
     max_list_limit: int = Field(default=200)
 
+    @property
+    def rest_base_url(self) -> str | None:
+        """Return the Supabase PostgREST base URL, or None if not configured."""
+
+        if not self.supabase_url:
+            return None
+        return f"{self.supabase_url.rstrip('/')}/rest/v1"
+
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return a cached :class:`Settings` instance.
-
-    Call ``get_settings.cache_clear()`` after mutating the environment (mainly
-    in tests) to force a rebuild.
-    """
-
     return Settings()

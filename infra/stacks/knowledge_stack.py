@@ -2,7 +2,7 @@
 
 Provisions:
 
-* a Secrets Manager secret holding DB credentials + auth tokens,
+* a Secrets Manager secret holding Supabase credentials + auth tokens,
 * a Python 3.13 Lambda running the FastAPI app via Mangum,
 * an API Gateway HTTP API proxying all routes to the Lambda,
 * least-privilege IAM (Lambda reads only its own secret),
@@ -44,6 +44,7 @@ _ASSET_EXCLUDES = [
     ".git",
     "infra",
     "tests",
+    "scripts",
     "**/__pycache__",
     "*.pyc",
     "cdk.out",
@@ -60,15 +61,15 @@ class KnowledgeApiStack(Stack):
         log_level = self.node.try_get_context("log_level") or "INFO"
 
         # -- Secret ------------------------------------------------------- #
-        # DATABASE_URL is filled in after creation (via console/CLI) with the
-        # Supabase connection string; the other keys are generated/optional.
+        # Holds SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY,
+        # API_TOKEN, JWT_SECRET, etc. Fill these in after first deploy.
         secret = secretsmanager.Secret(
             self,
             "KnowledgeApiSecret",
             secret_name="knowledge-api/config",
-            description="Knowledge API config: DATABASE_URL, API_TOKEN, JWT_SECRET.",
+            description="Knowledge API config: Supabase keys, API_TOKEN, JWT_SECRET.",
             generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"DATABASE_URL":"","JWT_SECRET":""}',
+                secret_string_template='{"SUPABASE_URL":"","SUPABASE_SERVICE_ROLE_KEY":"","SUPABASE_ANON_KEY":"","JWT_SECRET":""}',
                 generate_string_key="API_TOKEN",
                 exclude_punctuation=True,
                 password_length=48,

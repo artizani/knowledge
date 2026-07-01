@@ -1,16 +1,18 @@
-"""Unit tests for the service layer (business logic + transactions)."""
+"""Unit tests for the service layer (business logic)."""
 from __future__ import annotations
 
 import uuid
 
 import pytest
 
+from tests.fake_repository import FakeKnowledgeRepository
+
 
 @pytest.fixture
-def service(db_session):
+def service():
     from app.service import KnowledgeService
 
-    return KnowledgeService(db_session)
+    return KnowledgeService(FakeKnowledgeRepository())
 
 
 def _capture(service, **overrides):
@@ -28,14 +30,13 @@ def _capture(service, **overrides):
     return service.capture(CaptureRequest.model_validate(data))
 
 
-def test_capture_persists(service, db_session):
+def test_capture_persists(service):
     k = _capture(service)
-    assert isinstance(k.id, uuid.UUID)
-    assert k.title == "Life Weeks"
-    assert k.meta == {"tags": ["consumer"]}
-    assert len(k.documents) == 1
-    # committed & retrievable in a fresh query
-    assert service.get(k.id).id == k.id
+    assert uuid.UUID(k["id"])
+    assert k["title"] == "Life Weeks"
+    assert k["metadata"] == {"tags": ["consumer"]}
+    assert len(k["documents"]) == 1
+    assert service.get(uuid.UUID(k["id"]))["id"] == k["id"]
 
 
 def test_get_missing_raises(service):
@@ -49,7 +50,7 @@ def test_list_returns_items(service):
     _capture(service, title="A")
     _capture(service, title="B")
     items = service.list()
-    assert {i.title for i in items} == {"A", "B"}
+    assert {i["title"] for i in items} == {"A", "B"}
 
 
 def test_list_applies_default_limit(service, monkeypatch):
@@ -85,48 +86,33 @@ def test_search(service):
 
     results = service.search(SearchRequest(query="paye"))
     assert len(results) == 1
-    assert results[0].title == "PAYE rules"
+    assert results[0]["title"] == "PAYE rules"
 
 
-def test_update_changes_fields(service, db_session):
+def test_update_changes_fields(service):
     from app.schemas import UpdateRequest
 
     k = _capture(service, title="Old", status="inbox")
-    updated = service.update(k.id, UpdateRequest(title="New", status="building"))
-    assert updated.title == "New"
-    assert updated.status == "building"
-    # unchanged fields preserved
-    assert updated.namespace == "icebox"
+    updated = service.update(uuid.UUID(k["id"]), UpdateRequest(title="New", status="building"))
+    assert updated["title"] == "New"
+    assert updated["status"] == "building"
+    assert updated["namespace"] == "icebox"
 
 
-def test_update_replaces_documents_and_metadata(service, db_session):
+def test_update_replaces_documents_and_metadata(service):
     from app.schemas import DocumentIn, UpdateRequest
 
     k = _capture(service)
     service.update(
-        k.id,
+        uuid.UUID(k["id"]),
         UpdateRequest(
             documents=[DocumentIn(name="new.md", content="new")],
             metadata={"priority": "high"},
         ),
     )
-    fetched = service.get(k.id)
-    assert [d.name for d in fetched.documents] == ["new.md"]
-    assert fetched.meta == {"priority": "high"}
-
-
-def test_update_bumps_updated_at(service):
-    import time
-
-    from app.schemas import DocumentIn, UpdateRequest
-
-    k = _capture(service)
-    before = k.updated_at
-    time.sleep(0.01)
-    updated = service.update(
-        k.id, UpdateRequest(documents=[DocumentIn(name="x.md", content="x")])
-    )
-    assert updated.updated_at > before
+    fetched = service.get(uuid.UUID(k["id"]))
+    assert [d["name"] for d in fetched["documents"]] == ["new.md"]
+    assert fetched["metadata"] == {"priority": "high"}
 
 
 def test_update_missing_raises(service):
@@ -141,11 +127,11 @@ def test_delete_soft_deletes(service):
     from app.errors import NotFoundError
 
     k = _capture(service)
-    deleted = service.delete(k.id)
-    assert deleted.id == k.id
-    assert deleted.deleted_at is not None
+    deleted = service.delete(uuid.UUID(k["id"]))
+    assert deleted["id"] == k["id"]
+    assert deleted["deleted_at"] is not None
     with pytest.raises(NotFoundError):
-        service.get(k.id)
+        service.get(uuid.UUID(k["id"]))
 
 
 def test_delete_missing_raises(service):
@@ -159,41 +145,6 @@ def test_double_delete_raises(service):
     from app.errors import NotFoundError
 
     k = _capture(service)
-    service.delete(k.id)
+    service.delete(uuid.UUID(k["id"]))
     with pytest.raises(NotFoundError):
-        service.delete(k.id)
-
-
-def test_capture_rolls_back_on_commit_error(service, monkeypatch):
-    from app.schemas import CaptureRequest
-
-    def boom():
-        raise RuntimeError("commit failed")
-
-    monkeypatch.setattr(service.session, "commit", boom)
-
-    with pytest.raises(RuntimeError):
-        service.capture(
-            CaptureRequest.model_validate(
-                {"namespace": "ns", "title": "T", "type": "idea", "status": "inbox"}
-            )
-        )
-
-    # After rollback the session is clean and nothing was persisted.
-    monkeypatch.undo()
-    assert service.list() == []
-
-
-def test_delete_rolls_back_on_commit_error(service, monkeypatch):
-    k = _capture(service)
-
-    def boom():
-        raise RuntimeError("commit failed")
-
-    monkeypatch.setattr(service.session, "commit", boom)
-    with pytest.raises(RuntimeError):
-        service.delete(k.id)
-
-    # rollback restored the record: it is still retrievable and not deleted.
-    monkeypatch.undo()
-    assert service.get(k.id).deleted_at is None
+        service.delete(uuid.UUID(k["id"]))
