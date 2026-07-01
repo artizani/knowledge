@@ -219,15 +219,54 @@ class KnowledgeRepository:
         namespace: str | None = None,
         limit: int | None = None,
     ) -> list[dict]:
+        # PostgREST cannot OR across an embedded table in a single query, so we
+        # search titles and documents separately and merge the results.
         pattern = _quote_ilike(query)
+        ids: set[str] = set()
+
+        # 1. knowledge titles
+        title_params: dict = {
+            "title": f"ilike.{pattern}",
+            "deleted_at": "is.null",
+            "select": "id",
+        }
+        if namespace:
+            title_params["namespace"] = f"eq.{namespace}"
+        response = self._request(self._read_client, "GET", "/knowledge", params=title_params)
+        for row in response.json():
+            ids.add(row["id"])
+
+        # 2. document contents -> knowledge IDs
+        doc_params: dict = {
+            "content": f"ilike.{pattern}",
+            "select": "knowledge_id",
+        }
+        if namespace:
+            # documents don't have namespace; we filter knowledge below, but we
+            # can also join via embedded knowledge and filter there.
+            doc_params["knowledge.namespace"] = f"eq.{namespace}"
+            doc_params["select"] = "knowledge_id,knowledge(namespace)"
+        response = self._request(self._read_client, "GET", "/documents", params=doc_params)
+        for row in response.json():
+            if (
+                namespace
+                and "knowledge" in row
+                and row["knowledge"].get("namespace") != namespace
+            ):
+                continue
+            ids.add(row["knowledge_id"])
+
+        if not ids:
+            return []
+
+        # 3. fetch full records for the merged IDs
+        id_list = ",".join(ids)
         params: dict = {
-            "or": f"(title.ilike.{pattern},documents.content.ilike.{pattern})",
+            "id": f"in.({id_list})",
             "deleted_at": "is.null",
             "select": "*,documents(*)",
             "order": "created_at.desc",
         }
-        if namespace:
-            params["namespace"] = f"eq.{namespace}"
         if limit is not None:
             params["limit"] = str(limit)
         response = self._request(self._read_client, "GET", "/knowledge", params=params)

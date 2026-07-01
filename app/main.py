@@ -36,9 +36,11 @@ def get_repository() -> KnowledgeRepository:
     settings = get_settings()
     if not settings.rest_base_url or not settings.supabase_service_role_key:
         raise RuntimeError("Supabase URL and service role key are not configured")
+    # The Lambda is a backend service; it uses the service_role key for both
+    # reads and writes so RLS policies do not block it.
     return KnowledgeRepository(
         base_url=settings.rest_base_url,
-        api_key=settings.supabase_anon_key or settings.supabase_service_role_key,
+        api_key=settings.supabase_service_role_key,
         service_key=settings.supabase_service_role_key,
         schema=settings.supabase_schema,
     )

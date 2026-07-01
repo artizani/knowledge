@@ -133,16 +133,27 @@ def test_list_builds_filters(repo):
     repo.list(namespace="icebox", type="idea", status="research", limit=10)
 
 
-def test_search_uses_or_ilike(repo):
+def test_search_queries_titles_and_documents_and_merges(repo):
+    calls = []
+
     def handler(request: httpx.Request):
-        qs = str(request.url.query)
-        assert "or=(title.ilike.*paye*,documents.content.ilike.*paye*)" in qs
-        assert "namespace=eq.taxable" in qs
-        assert "limit=20" in qs
+        path = request.url.path
+        calls.append((request.method, path, str(request.url.query)))
+        if path.endswith("/knowledge") and "title=ilike" in str(request.url):
+            return httpx.Response(200, json=[{"id": "k1"}])
+        if path.endswith("/documents"):
+            return httpx.Response(200, json=[{"knowledge_id": "k2"}])
+        if path.endswith("/knowledge") and "id=in" in str(request.url):
+            return httpx.Response(200, json=[{"id": "k1"}, {"id": "k2"}])
         return httpx.Response(200, json=[])
 
     _install_read(repo, handler)
-    repo.search(query="paye", namespace="taxable", limit=20)
+    results = repo.search(query="paye", namespace="taxable", limit=20)
+    assert len(results) == 2
+    assert {r["id"] for r in results} == {"k1", "k2"}
+    assert any("title=ilike.*paye*" in c[2] for c in calls)
+    assert any("content=ilike.*paye*" in c[2] for c in calls)
+    assert any("id=in.(k1,k2)" in c[2] for c in calls)
 
 
 def test_update_patches_knowledge(repo):
