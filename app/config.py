@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # Authentication ---------------------------------------------------------
     api_token: str | None = Field(default=None)
+    api_tokens: list[str] = Field(default_factory=list)
     jwt_secret: str | None = Field(default=None)
     jwt_algorithms: list[str] = Field(default_factory=lambda: ["HS256"])
     jwt_audience: str | None = Field(default=None)
@@ -46,6 +47,13 @@ class Settings(BaseSettings):
     # Query defaults ---------------------------------------------------------
     default_list_limit: int = Field(default=50)
     max_list_limit: int = Field(default=200)
+
+    def model_post_init(self, __context):
+        """Build ``api_tokens`` from ``api_token`` if only a single token is set."""
+
+        # Pydantic may have already set api_tokens from env; don't overwrite it.
+        if self.api_token and not self.api_tokens:
+            self.api_tokens = [self.api_token]
 
     @property
     def rest_base_url(self) -> str | None:

@@ -53,8 +53,9 @@ def _verify_jwt(token: str, settings: Settings) -> Principal:
 def verify_token(token: str, settings: Settings) -> Principal:
     """Return a principal for ``token`` or raise :class:`AuthError`."""
 
-    if settings.api_token and hmac.compare_digest(token, settings.api_token):
-        return {"sub": "internal", "method": "bearer"}
+    for valid in settings.api_tokens:
+        if valid and hmac.compare_digest(token, valid):
+            return {"sub": "internal", "method": "bearer"}
     if settings.jwt_secret:
         return _verify_jwt(token, settings)
     raise AuthError("invalid token")

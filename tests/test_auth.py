@@ -1,4 +1,4 @@
-"""Unit tests for authentication (static bearer token and JWT)."""
+"""Unit tests for authentication (static bearer tokens and JWT)."""
 from __future__ import annotations
 
 import time
@@ -38,7 +38,7 @@ def test_extract_bearer_invalid(headers):
 def test_verify_static_token_ok():
     from app.auth import verify_token
 
-    settings = Settings(api_token="s3cr3t", jwt_secret=None)
+    settings = Settings(api_tokens=["s3cr3t"], jwt_secret=None)
     principal = verify_token("s3cr3t", settings)
     assert principal["method"] == "bearer"
 
@@ -46,7 +46,7 @@ def test_verify_static_token_ok():
 def test_verify_static_token_wrong():
     from app.auth import verify_token
 
-    settings = Settings(api_token="s3cr3t", jwt_secret=None)
+    settings = Settings(api_tokens=["s3cr3t"], jwt_secret=None)
     with pytest.raises(AuthError):
         verify_token("nope", settings)
 
@@ -54,16 +54,34 @@ def test_verify_static_token_wrong():
 def test_verify_no_credentials_configured_rejects():
     from app.auth import verify_token
 
-    settings = Settings(api_token=None, jwt_secret=None)
+    settings = Settings(api_tokens=[], jwt_secret=None)
     with pytest.raises(AuthError):
         verify_token("anything", settings)
+
+
+def test_verify_multiple_static_tokens_accepted():
+    from app.auth import verify_token
+
+    settings = Settings(api_tokens=["alpha", "beta", "gamma"], jwt_secret=None)
+    assert verify_token("alpha", settings)["method"] == "bearer"
+    assert verify_token("beta", settings)["method"] == "bearer"
+    assert verify_token("gamma", settings)["method"] == "bearer"
+    with pytest.raises(AuthError):
+        verify_token("delta", settings)
+
+
+def test_api_token_backwards_compatibility():
+    from app.auth import verify_token
+
+    settings = Settings(api_token="legacy", jwt_secret=None)
+    assert verify_token("legacy", settings)["method"] == "bearer"
 
 
 # -- verify_token: JWT ------------------------------------------------------ #
 def test_verify_jwt_ok():
     from app.auth import verify_token
 
-    settings = Settings(jwt_secret="topsecret", api_token=None)
+    settings = Settings(jwt_secret="topsecret", api_tokens=[])
     token = jwt.encode({"sub": "user-1"}, "topsecret", algorithm="HS256")
     principal = verify_token(token, settings)
     assert principal["method"] == "jwt"
@@ -73,7 +91,7 @@ def test_verify_jwt_ok():
 def test_verify_jwt_wrong_secret():
     from app.auth import verify_token
 
-    settings = Settings(jwt_secret="topsecret", api_token=None)
+    settings = Settings(jwt_secret="topsecret", api_tokens=[])
     token = jwt.encode({"sub": "user-1"}, "different", algorithm="HS256")
     with pytest.raises(AuthError):
         verify_token(token, settings)
@@ -82,7 +100,7 @@ def test_verify_jwt_wrong_secret():
 def test_verify_jwt_expired():
     from app.auth import verify_token
 
-    settings = Settings(jwt_secret="topsecret", api_token=None)
+    settings = Settings(jwt_secret="topsecret", api_tokens=[])
     token = jwt.encode(
         {"sub": "u", "exp": int(time.time()) - 10}, "topsecret", algorithm="HS256"
     )
@@ -93,7 +111,7 @@ def test_verify_jwt_expired():
 def test_verify_jwt_audience_enforced():
     from app.auth import verify_token
 
-    settings = Settings(jwt_secret="s", api_token=None, jwt_audience="knowledge-api")
+    settings = Settings(jwt_secret="s", api_tokens=[], jwt_audience="knowledge-api")
     good = jwt.encode({"sub": "u", "aud": "knowledge-api"}, "s", algorithm="HS256")
     assert verify_token(good, settings)["sub"] == "u"
 
@@ -105,7 +123,7 @@ def test_verify_jwt_audience_enforced():
 def test_static_token_and_jwt_both_accepted():
     from app.auth import verify_token
 
-    settings = Settings(api_token="static", jwt_secret="jwtsec")
+    settings = Settings(api_tokens=["static"], jwt_secret="jwtsec")
     assert verify_token("static", settings)["method"] == "bearer"
     token = jwt.encode({"sub": "u"}, "jwtsec", algorithm="HS256")
     assert verify_token(token, settings)["method"] == "jwt"
@@ -148,6 +166,17 @@ def test_require_write_auth_valid_token(monkeypatch):
     _with_env(monkeypatch, AUTH_REQUIRED="true", API_TOKEN="tok")
     try:
         principal = auth.require_write_auth(make_request({"Authorization": "Bearer tok"}))
+        assert principal["method"] == "bearer"
+    finally:
+        config.get_settings.cache_clear()
+
+
+def test_require_write_auth_valid_token_from_tokens_list(monkeypatch):
+    from app import auth, config
+
+    _with_env(monkeypatch, AUTH_REQUIRED="true", API_TOKENS='["tok1","tok2"]')
+    try:
+        principal = auth.require_write_auth(make_request({"Authorization": "Bearer tok2"}))
         assert principal["method"] == "bearer"
     finally:
         config.get_settings.cache_clear()

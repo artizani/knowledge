@@ -200,14 +200,54 @@ List tools with `{"method": "tools/list"}`.
 
 ## Authentication
 
-Set either or both; either is accepted on protected routes:
+Set either or both; any configured bearer token is accepted on protected routes:
 
-- **Static bearer token** — `API_TOKEN`. Send `Authorization: Bearer <token>`.
+- **Static bearer tokens** — `API_TOKENS` (JSON list in Secrets Manager), or
+  legacy `API_TOKEN` (single string). Send `Authorization: Bearer <token>`.
 - **JWT (HS256)** — `JWT_SECRET` (+ optional `JWT_AUDIENCE`, `JWT_ISSUER`),
   e.g. Auth.js-issued tokens. Signature and expiry are verified.
 
 `AUTH_REQUIRED=true` (default) protects writes. `REQUIRE_AUTH_FOR_READS=true`
 also locks down reads.
+
+### Generating / rotating API tokens
+
+```bash
+# Add one new token to the existing list (keeps old tokens valid)
+python scripts/rotate_api_token.py
+
+# Generate 3 new tokens at once
+python scripts/rotate_api_token.py --count 3
+
+# Replace all existing tokens (invalidates old ones)
+python scripts/rotate_api_token.py --replace
+
+# Preview without changing the secret
+python scripts/rotate_api_token.py --dry-run
+```
+
+The script updates `API_TOKENS` in `knowledge-api/config` in AWS Secrets Manager
+and prints the new token(s) to stdout. It also keeps `API_TOKEN` in sync with
+the first entry for backward compatibility.
+
+### Creating tokens manually
+
+If you prefer to create tokens by hand, add them as a JSON list to the secret:
+
+```json
+{
+  "API_TOKENS": [
+    "your-first-token",
+    "your-second-token"
+  ],
+  "API_TOKEN": "your-first-token"
+}
+```
+
+Tokens are checked with constant-time comparison. There is no expiry or
+revocation API yet — remove a token from the list in Secrets Manager to revoke
+it, then redeploy or wait for the Lambda to pick up the new secret on the next
+cold start.
 
 ---
 
