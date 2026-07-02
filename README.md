@@ -21,6 +21,7 @@ same HTTP/MCP backend.
 | Item | Value |
 |------|-------|
 | API base URL | `https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com` |
+| MCP endpoint | `POST https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com/mcp` |
 | AWS account | `710366405982` |
 | AWS region | `eu-west-1` |
 | CDK stack | `KnowledgeApiStack` |
