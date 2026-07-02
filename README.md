@@ -6,29 +6,46 @@ searchable single source of truth for ideas, specs, ADRs, research, meeting
 notes, roadmaps and more.
 
 The API is intentionally **generic** and **LLM-first**: every document is just
-Markdown, and any AI assistant (ChatGPT, Claude, Codex, future MCP clients) can
-use the same HTTP backend.
+Markdown, and any AI assistant (ChatGPT, Claude, Codex, MCP clients) can use the
+same HTTP/MCP backend.
 
 - **Runtime:** Python 3.13 on AWS Lambda (via [Mangum](https://mangum.io))
 - **Web framework:** FastAPI + Pydantic v2
 - **Gateway:** API Gateway HTTP API
-- **Database:** Supabase PostgreSQL via SQLAlchemy 2.0
+- **Database:** Supabase PostgreSQL via PostgREST
 - **Secrets:** AWS Secrets Manager · **Logs:** CloudWatch (structured JSON)
 - **Infra:** AWS CDK (Python) · **CI/CD:** GitHub Actions
+
+## Live instance
+
+| Item | Value |
+|------|-------|
+| API base URL | `https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com` |
+| AWS account | `710366405982` |
+| AWS region | `eu-west-1` |
+| CDK stack | `KnowledgeApiStack` |
+| Lambda function | `KnowledgeApiStack-KnowledgeApiFunctionA74E48D6-LBMOhbmerkZm` |
+| Secret | `arn:aws:secretsmanager:eu-west-1:710366405982:secret:knowledge-api/config` |
+| Supabase URL | `https://rmkneplvjjydjknegrhj.supabase.co` |
+| Supabase schema | `knowledge` |
+
+**API token** (write access) is stored in AWS Secrets Manager under
+`knowledge-api/config` (`API_TOKEN`). Reads are public by default; set
+`REQUIRE_AUTH_FOR_READS=true` to lock them down.
 
 ---
 
 ## Architecture
 
 ```
-ChatGPT / Claude / Codex / future MCP clients
+ChatGPT / Claude / Codex / MCP clients
                   │  HTTPS + Bearer/JWT
-            API Gateway (HTTP API)
+        API Gateway (HTTP API)
                   │
         AWS Lambda (Python 3.13)
    Mangum → FastAPI → Service → Repository
                   │
-        Supabase PostgreSQL (SQLAlchemy)
+        Supabase PostgreSQL (PostgREST + RLS)
 ```
 
 No application server, no frontend, no queues, no AI inside the API. It stores
@@ -40,17 +57,18 @@ Studio.
 | Path | Responsibility |
 |------|----------------|
 | `app/config.py` | Settings from env / Secrets Manager |
-| `app/models.py` | SQLAlchemy ORM (`knowledge`, `documents`) |
+| `app/models.py` | Domain models (`knowledge`, `documents`) |
 | `app/schemas.py` | Pydantic request/response models + validation |
-| `app/repository.py` | All SQL query construction |
-| `app/service.py` | Business logic + one-transaction-per-request |
+| `app/repository.py` | PostgREST client (reads and writes via `service_role`) |
+| `app/service.py` | Business logic |
 | `app/auth.py` | Static bearer token **and/or** JWT verification |
-| `app/main.py` | FastAPI app: routes, error contract, request logging |
+| `app/main.py` | FastAPI app: REST routes + `/mcp` route |
+| `app/mcp_server.py` | MCP Streamable HTTP server wrapping the service |
 | `app/logging_config.py` | Structured JSON logging for CloudWatch |
 | `app/secrets.py` | Load Secrets Manager JSON into the environment |
 | `handler.py` | Lambda entrypoint (`handler.handler`) |
-| `infra/` | AWS CDK app (Lambda, HTTP API, Secret, IAM, logs) |
-| `scripts/init_db.py` | One-off schema creation |
+| `infra/` | AWS CDK app (Lambda, HTTP API, IAM, logs) |
+| `scripts/init_db.py` | One-off schema creation (direct Postgres) |
 
 ---
 
@@ -60,28 +78,30 @@ Writes require a token; reads are open by default (configurable).
 
 | Method & path | Auth | Description |
 |---------------|------|-------------|
+| `GET /health`, `GET /` | open | Health / service info |
 | `POST /capture` | ✅ write | Create a knowledge record with documents |
 | `GET /knowledge/{id}` | read | Fetch one record (with documents) |
 | `GET /knowledge` | read | List with `namespace`, `type`, `status`, `limit` filters |
-| `POST /search` | read | Full-text-ish search (PostgreSQL `ILIKE`) |
+| `POST /search` | read | Full-text-ish search (PostgREST `ilike`) |
 | `PUT /knowledge/{id}` | ✅ write | Update metadata and/or documents |
 | `DELETE /knowledge/{id}` | ✅ write | Soft delete |
-| `GET /health`, `GET /` | open | Health / service info |
 
 ### `POST /capture`
 
-```json
-{
-  "namespace": "icebox",
-  "title": "Life Weeks",
-  "type": "idea",
-  "status": "research",
-  "documents": [
-    { "name": "spec.md", "content": "# Spec..." },
-    { "name": "research.md", "content": "# Research..." }
-  ],
-  "metadata": { "tags": ["consumer", "reflection"], "createdBy": "ChatGPT" }
-}
+```bash
+curl -X POST https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com/capture \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "icebox",
+    "title": "Life Weeks",
+    "type": "idea",
+    "status": "research",
+    "documents": [
+      { "name": "spec.md", "content": "# Spec..." }
+    ],
+    "metadata": { "tags": ["consumer", "reflection"] }
+  }'
 ```
 
 Response `201`:
@@ -92,13 +112,15 @@ Response `201`:
 
 ### `POST /search`
 
-```json
-{ "query": "PAYE", "namespace": "taxable", "limit": 50 }
+```bash
+curl -X POST https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com/search \
+  -H "Content-Type: application/json" \
+  -d '{ "query": "PAYE", "namespace": "taxable", "limit": 50 }'
 ```
 
 `namespace` and `limit` are optional. Returns `{ "items": [...], "count": N }`.
-Search currently uses PostgreSQL `ILIKE` over titles and document content;
-future versions can switch to embeddings without changing this API.
+Search currently uses PostgREST `ilike` over titles and document content; future
+versions can switch to embeddings without changing this API.
 
 ### Vocabularies
 
@@ -125,6 +147,57 @@ Every response carries an `x-request-id` header (echoes an inbound one).
 
 ---
 
+## MCP Server
+
+The same service is exposed as an MCP server on the same Lambda via **Streamable
+HTTP** (JSON-response mode) at:
+
+```
+POST https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com/mcp
+```
+
+Use `Accept: application/json` and `Content-Type: application/json`. Writes
+still require the bearer token in `Authorization`.
+
+### Available tools
+
+| Tool | Auth | Description |
+|------|------|-------------|
+| `capture` | ✅ write | Create a knowledge record |
+| `get` | read | Fetch one record by ID |
+| `list` | read | List records with filters |
+| `search` | read | Search titles and document contents |
+| `update` | ✅ write | Update a record |
+| `delete` | ✅ write | Soft-delete a record |
+
+### Example JSON-RPC call
+
+```bash
+curl -X POST https://6o1y99a5m5.execute-api.eu-west-1.amazonaws.com/mcp \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "tools/call",
+    "params": {
+      "name": "capture",
+      "arguments": {
+        "namespace": "icebox",
+        "title": "Life Weeks",
+        "type": "idea",
+        "status": "research",
+        "content": "# Spec..."
+      }
+    }
+  }'
+```
+
+List tools with `{"method": "tools/list"}`.
+
+---
+
 ## Authentication
 
 Set either or both; either is accepted on protected routes:
@@ -144,7 +217,7 @@ also locks down reads.
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-cp .env.example .env            # set API_TOKEN (and DATABASE_URL if desired)
+cp .env.example .env            # set API_TOKEN
 python scripts/init_db.py       # create tables (SQLite by default)
 
 # Run the API locally with uvicorn:
@@ -163,16 +236,12 @@ curl -X POST http://127.0.0.1:8000/capture \
 ## Testing
 
 ```bash
-# Application test suite (SQLite in-memory, no external services):
+# Application test suite (in-memory fake repository, no external services):
 pytest --cov=app --cov-report=term-missing
 
 # Infrastructure synth tests (no Docker needed):
 cd infra && python -m pytest -q
 ```
-
-The app suite runs fully offline against in-memory SQLite; the ORM uses
-dialect-portable types (`Uuid`, `JSON`/`JSONB`) so the same models run on
-PostgreSQL in production.
 
 ---
 
@@ -183,20 +252,22 @@ only needed once.
 
 ### One-time setup
 
-1. **Supabase** — create a project and note the connection string (use the
-   pooler host on port `6543` for serverless).
+1. **Supabase** — create a project and note the project URL.
 2. **CDK bootstrap** the target account/region: `cd infra && cdk bootstrap`.
-3. **Deploy** once to create the stack and the secret:
-   `cd infra && cdk deploy`.
+3. **Deploy** once to create the stack and API Gateway/Lambda.
 4. **Fill the secret** `knowledge-api/config` in Secrets Manager with:
    ```json
-   { "DATABASE_URL": "postgresql+psycopg2://...pooler.supabase.com:6543/postgres",
+   {
+     "SUPABASE_URL": "https://<project>.supabase.co",
+     "SUPABASE_SERVICE_ROLE_KEY": "<service_role>",
+     "SUPABASE_ANON_KEY": "<anon_key>",
      "API_TOKEN": "<generated or your own>",
-     "JWT_SECRET": "<optional>" }
+     "JWT_SECRET": "<optional>"
+   }
    ```
-   (`API_TOKEN` is auto-generated on first create; the others start empty.)
 5. **Create the schema**: run `python scripts/init_db.py` with `DATABASE_URL`
-   set to the Supabase connection string.
+   set to the Supabase connection string, or create the `knowledge.knowledge`
+   and `knowledge.documents` tables manually.
 
 ### GitHub Actions
 
@@ -208,8 +279,8 @@ only needed once.
   - repo **variables**: `AWS_REGION`
 
 The Lambda reads only its own secret (least-privilege IAM), loads it into the
-environment at cold start, and reuses the connection across warm invocations
-(`NullPool` + `pool_pre_ping`, sized for the external Supabase pooler).
+environment at cold start, and reuses the PostgREST HTTP client across warm
+invocations.
 
 ---
 
@@ -224,5 +295,3 @@ document content) · minimal (no workflows, queues, events or AI in the API).
   summaries, auto-tagging, GitHub/S3 export.
 - **v3:** related documents, knowledge graph, conversation linking, duplicate
   detection, product timeline.
-- **MCP adapter:** maps `capture()/search()/update()` tools onto these REST
-  calls — the REST API stays unchanged.
