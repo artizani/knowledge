@@ -30,8 +30,9 @@ def repository():
 
 
 @pytest.fixture
-def app(repository):
+def app(repository, monkeypatch):
     from app.main import create_app, get_repository
+    import app.main as main_module
 
     application = create_app()
 
@@ -39,6 +40,10 @@ def app(repository):
         return repository
 
     application.dependency_overrides[get_repository] = override_get_repository
+    # The MCP tool handlers import get_repository directly (not via FastAPI
+    # Depends), so we also monkeypatch the module function for test isolation.
+    monkeypatch.setattr(main_module, "get_repository", override_get_repository)
+
     yield application
     application.dependency_overrides.clear()
 

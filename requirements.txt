@@ -6,6 +6,8 @@ pydantic==2.13.4
 pydantic-settings==2.14.2
 pyjwt==2.13.0
 httpx==0.28.1
+mcp==1.28.1
+sse-starlette==3.4.5
 # SQLAlchemy/psycopg2 are only used by scripts/init_db.py (direct Postgres).
 sqlalchemy==2.0.51
 psycopg2-binary==2.9.10

@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.constants import KNOWLEDGE_STATUSES, KNOWLEDGE_TYPES
 from app.errors import AuthError, NotFoundError
 from app.logging_config import configure_logging, get_logger
+from app.mcp_server import mcp_streamable_endpoint
 from app.repository import KnowledgeRepository
 from app.schemas import (
     CaptureRequest,
@@ -240,5 +241,10 @@ def create_app() -> FastAPI:
         knowledge = service.delete(knowledge_id)
         request.state.namespace = knowledge["namespace"]
         return DeleteResponse(id=uuid.UUID(knowledge["id"]), status="deleted")
+
+    # -- mcp -------------------------------------------------------------- #
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"], tags=["mcp"])
+    async def mcp(request: Request):
+        return await mcp_streamable_endpoint(request)
 
     return app
